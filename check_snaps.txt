@@ -1,0 +1,105 @@
+#!/usr/local/bin/perl
+use strict;
+use DateTime;
+use Spreadsheet::WriteExcel::Simple;
+
+####################################################
+#                                                  #
+# Get list of snapshots over 60 days old and email #
+# to administrators.                               #
+#                                                  #
+# Martin Colello                                   #
+# 06/06/2016                                       #
+#                                                  #
+####################################################
+
+# Get raw data
+my $command = 'ssh -q -o StrictHostKeyChecking=no -i /usr/local/admin/snapdot/.ssh/id_dsa -l snapdot asclst01 volume snapshot show -fields Create-time';
+
+my @results;
+push @results, "DAYS,VSERVER,VOLUME,SNAP";
+
+my $current_time = time();
+my @input = `$command`;
+chomp(@input);
+
+# Loop through lines and do formatting and math
+foreach(@input) {
+  my $line = $_;
+  if ( $line =~ /^\s/ )       { next }
+  if ( $line =~ /^vserver/ )  { next }
+  if ( $line =~ /^Info/ )     { next }
+  if ( $line =~ /^-/ )        { next }
+  if ( $line =~ /displayed/ ) { next }
+  my @split = split /\s+/, $line;
+  my $day_of_week  = $split[3];
+  my $month        = $split[4];
+  my $day_of_month = $split[5];
+  my $raw_time     = $split[6];
+  my $year         = $split[7];
+  my $vserver      = $split[0];
+  my $volume       = $split[1];
+  my $snap         = $split[2];
+  @split = split /:/, $raw_time;
+  my $hour = $split[0];
+  my $min  = $split[1];
+  my $sec  = $split[2];
+
+  next unless $month =~ /Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec/;
+
+  if ( $month =~ /Jan/ ) { $month = '1'  }
+  if ( $month =~ /Feb/ ) { $month = '2'  }
+  if ( $month =~ /Mar/ ) { $month = '3'  }
+  if ( $month =~ /Apr/ ) { $month = '4'  }
+  if ( $month =~ /May/ ) { $month = '5'  }
+  if ( $month =~ /Jun/ ) { $month = '6'  }
+  if ( $month =~ /Jul/ ) { $month = '7'  }
+  if ( $month =~ /Aug/ ) { $month = '8'  }
+  if ( $month =~ /Sep/ ) { $month = '9'  }
+  if ( $month =~ /Oct/ ) { $month = '10' }
+  if ( $month =~ /Nov/ ) { $month = '11' }
+  if ( $month =~ /Dec/ ) { $month = '12' }
+
+  my $dt = DateTime->new( year => $year, month => $month, day => $day_of_month, hour => $hour, minute => $min, second => $sec );
+  my $epoch_time = $dt->epoch;
+  my $duration = int(($current_time - $epoch_time) / 86400);
+  #print "$line $duration\n";
+  if ( $duration > 59 ) {
+    push @results, "$duration,$vserver,$volume,$snap\n";
+  }
+}
+
+
+my $file  = '/tmp/old_snaps.csv';
+my $file2 = '/tmp/old_snaps.txt';
+my @final_results =  sort { $a <=> $b } @results;
+open OUTPUT, ">$file" or die;
+foreach(@final_results){
+  my $line = $_;
+  chomp($line);
+  print OUTPUT "$line\n";
+}
+close OUTPUT;
+
+my $ss = Spreadsheet::WriteExcel::Simple->new;
+my @bold;
+push @bold, 'DAYS';
+push @bold, 'VSERVER';
+push @bold, 'VOLUME';
+push @bold, 'SNAP';
+$ss->write_bold_row(\@bold);
+foreach(@final_results){
+  my $line = $_;
+  if ( $line =~ /VSERVER/ ) { next }
+  my @split = split /,/, $line;
+  $ss->write_row(\@split);
+}
+$ss->save("/tmp/old_snaps.xls");
+
+open OUTPUT, ">$file2" or die;
+print OUTPUT "Find report attached.\n";
+close OUTPUT;
+
+# Email results
+my $email_command = '/usr/local/bin/mailx -s "Snapshot Age Report - Cluster - Over 60 Days" -a /tmp/old_snaps.xls martin.colello@example.com < /tmp/old_snaps.txt';
+system("$email_command");
